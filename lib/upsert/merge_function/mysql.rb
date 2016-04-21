@@ -24,6 +24,30 @@ class Upsert
         setter_column_definitions = column_definitions.select { |cd| setter_keys.include?(cd.name) }
         update_column_definitions = setter_column_definitions.select { |cd| cd.name !~ CREATED_COL_REGEX }
         quoted_name = connection.quote_ident name
+
+
+        ##rails auto timestamps
+        #Solution based on based on https://github.com/seamusabshere/upsert/pull/65
+        @time_stamp_cols = column_definitions.select{|cd| cd.name == 'created_at' || cd.name == 'updated_at'}
+        @update_time_stamp_cols =  column_definitions.select{|cd| cd.name == 'updated_at'}
+        names = setter_column_definitions.map(&:quoted_name).join(', ')
+        values = setter_column_definitions.map(&:to_setter_value).join(', ')
+        update_pair = update_column_definitions.map(&:to_setter).join(', ')
+
+        if @time_stamp_cols.count > 0
+          names += ', created_at, updated_at'
+          values += ", now(), now()"
+        end
+        @time_stamp_cols=[]
+        if @update_time_stamp_cols.count > 0
+          update_pair += ", updated_at = now()"
+        end
+        @update_time_stamp_cols=[]
+
+        #
+        ##
+
+
         connection.execute "DROP PROCEDURE IF EXISTS #{quoted_name}"
         connection.execute(%{
           CREATE PROCEDURE #{quoted_name}(#{(selector_column_definitions.map(&:to_selector_arg) + setter_column_definitions.map(&:to_setter_arg)).join(', ')})
@@ -51,10 +75,10 @@ class Upsert
                 -- key error. But the handler above will take care of that.
                 IF @count > 0 THEN 
                   -- UPDATE table_name SET b = b_SET WHERE a = a_SEL;
-                  UPDATE #{quoted_table_name} SET #{update_column_definitions.map(&:to_setter).join(', ')} WHERE #{selector_column_definitions.map(&:to_selector).join(' AND ')};
+                  UPDATE #{quoted_table_name} SET #{update_pair} WHERE #{selector_column_definitions.map(&:to_selector).join(' AND ')};
                 ELSE
                   -- INSERT INTO table_name (a, b) VALUES (k, data);
-                  INSERT INTO #{quoted_table_name} (#{setter_column_definitions.map(&:quoted_name).join(', ')}) VALUES (#{setter_column_definitions.map(&:to_setter_value).join(', ')});
+                  INSERT INTO #{quoted_table_name} (#{names}) VALUES (#{values});
                 END IF;
               END;
             UNTIL done END REPEAT;
